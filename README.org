@@ -1,0 +1,128 @@
+#+TITLE: arch-expert
+A typed Prolog expert system for system troubleshooting playbooks.
+
+=arch-expert= records how to diagnose and fix recurring system problems as
+runnable *command templates* with typed argument slots, then replays them
+interactively on any machine.
+
+* CLI
+
+#+begin_example
+arch-expert list                     list known problems
+arch-expert <problem>                show a problem's playbook
+arch-expert troubleshoot <problem>   walk diagnostics + fixes step by step
+arch-expert add <problem-name>       record a new problem (interactive)
+arch-expert find <text>              search names, descriptions, symptoms
+arch-expert shell                    interactive expert shell
+arch-expert json [problem]           machine-readable playbook (JSON)
+arch-expert kb                       show knowledge base locations
+#+end_example
+
+Inside =arch-expert shell= you additionally get =!<command>= (shell escape)
+and =?- <goal>.= (evaluate Prolog against the loaded KB).
+
+* How knowledge is stored
+
+A problem is a set of Prolog facts:
+
+#+begin_prolog
+problem(failed_service, "One or more systemd units are in a failed state.", [systemd, services]).
+symptom(failed_service, "red 'FAILED' at boot").
+diag(failed_service, 2, t("journalctl", [literal("-u"), slot(service, "sshd.service"),
+                                         literal("-b"), literal("--no-pager")]),
+     "read the unit's log for this boot").
+fix(failed_service, 1, cmd(t("systemctl", [literal("restart"), slot(service, "sshd.service")]),
+                           "restart the failed unit after fixing its root cause")).
+fix(failed_service, 2, prose("Check the unit's configuration before restarting.")).
+#+end_prolog
+
+- =slot(Type, Example)= is a typed placeholder.  During =add= the type is
+  *inferred* from the command context and token shape (=-u sshd.service=
+  becomes =service=, =/dev/sda2= becomes =device=, =pacman -Qkk glibc=
+  becomes =package=, ...).  You can override the type or freeze a token as a
+  literal.
+- During =troubleshoot= each slot is filled interactively: per-type prompts,
+  validation, and live suggestions probed from the system (=lsblk= for
+  devices, failed units for services, =/boot= for kernels, ...).  The
+  example recorded at =add= time is the default.
+- Commands only run after confirmation; known-destructive patterns
+  (=mkfs=, =wipefs=, =dd=, =rm -rf=, ...) get a red warning.
+
+* Slot types
+
+=device= =mountpoint= =path= =service= =package= =kernel_version= =uuid=
+=user= =number= =owner= — see =prolog/types.pl=; new shapes are added there.
+
+* Distribution-agnostic by design
+
+The tool itself has no distro dependencies beyond SWI-Prolog and a POSIX
+shell.  Command inference knows the package managers of Arch, Debian, Red
+Hat, SUSE, Alpine and Nix (operand after =install=/=-S=/=add=... becomes a
+typed =package= slot), systemd and OpenRC unit commands, and generic shapes
+(devices, mountpoints, UUIDs, kernels).  The bundled KB is split:
+
+- =kb/00_core.pl= — distro-neutral playbooks (boot, services, disk, fstab,
+  network, clock)
+- =kb/10_arch.pl= — Arch specifics (pacman, mkinitcpio, GRUB)
+- =kb/20_nixos.pl= — NixOS specifics (generations, bootloader reinstall,
+  store repair)
+
+and =arch-expert add= records what *your* machines actually needed, on any
+distro.
+
+* Embedding (Zara, agents, scripts)
+
+arch-expert is loadable as a plain Prolog library — no CLI subprocess
+required:
+
+#+begin_prolog
+:- use_module("/path/to/arch-expert/prolog/load.pl").
+
+?- arch_expert:plan(failed_service, Steps).       % rendered diagnostics
+%  Steps = [#{kind:diag, command:"systemctl --failed", slots:[], explanation:...},
+%           #{kind:diag, command:"journalctl -u {{service}} -b --no-pager",
+%             slots:[service], explanation:...}, ...]
+
+?- arch_expert:plan_fixes(failed_service, Fixes). % fixes + prose notes
+#+end_prolog
+
+The same data is available without a Prolog session:
+
+#+begin_example
+arch-expert json                # all problems: name + description
+arch-expert json failed_service # full playbook with rendered templates
+#+end_example
+
+Slots in the JSON =command= strings appear as ={{type}}= placeholders with
+the slot types listed separately, so an embedding host (Zara sidecar,
+opencode agent, plain shell scripts) can prompt or infer values itself.
+=prolog/kb.pl= additionally exposes =problem_info/3=, =problem_diags/2=,
+=problem_fixes/2= and =find_problems/2= for direct queries.
+
+* Knowledge base locations
+
+| KB       | Location (first match wins)                                |
+|----------+------------------------------------------------------------|
+| bundled  | =$ARCH_EXPERT_HOME/kb= (defaults next to the install)      |
+| user     | =$ARCH_EXPERT_KB= or =~/.local/share/arch-expert/kb=       |
+| sessions | =$ARCH_EXPERT_STATE= or =~/.local/state/arch-expert=       |
+
+User facts overlay bundled facts; a re-added problem overrides the bundled
+one with the same name.
+
+* Development
+
+#+begin_example
+nix develop        # swi-prolog toolchain
+make test          # PlUnit suite
+make install PREFIX=/usr/local DESTDIR=...
+#+end_example
+
+Layout: =bin/arch-expert= (launcher), =prolog/= (modules: types, template,
+kb, prompt, cmdrun, arch_expert), =kb/00_core.pl= (bundled playbook seeds),
+=tests/=.
+
+* Packaging
+
+- =nix build= / flake =packages.default=
+- =make install= for plain FHS installs (needs =swipl= on PATH)

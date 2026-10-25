@@ -1,0 +1,5 @@
+*.swp
+.prolog/runs/
+.prolog/facts.kb
+.prolog/verify.pl
+.prolog/result.json

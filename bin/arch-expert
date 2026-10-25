@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+# arch-expert launcher: resolves its install root and hands off to SWI-Prolog.
+set -eu
+SELF=$(readlink -f "$0")
+PARENT=$(dirname "$(dirname "$SELF")")
+
+if [ -n "${ARCH_EXPERT_HOME:-}" ] && [ -d "${ARCH_EXPERT_HOME}/prolog" ]; then
+    :
+elif [ -d "${PARENT}/share/arch-expert/prolog" ]; then
+    export ARCH_EXPERT_HOME="${PARENT}/share/arch-expert"
+else
+    export ARCH_EXPERT_HOME="${PARENT}"
+fi
+
+exec swipl --quiet --stack-limit=4g \
+    -g 'arch_expert:cli_main' -t 'halt(1)' \
+    -s "${ARCH_EXPERT_HOME}/prolog/load.pl" \
+    -- "$@"
